@@ -1,12 +1,16 @@
 from flask import Flask, render_template, jsonify, request
 from src.helper import download_hugging_face_embeddings
-from langchain.vectorstores import Pinecone as PineconeVectorStore 
-from langchain_anthropic import ChatAnthropic 
-from langchain.chains import RetrievalQA  
-from langchain.prompts import ChatPromptTemplate 
+from langchain.vectorstores import Pinecone as PineconeVectorStore
+# from langchain_pinecone import PineconeVectorStore
+from langchain_anthropic import ChatAnthropic
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from src.prompt import*
+import pinecone
+from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
 import os
-import pinecone
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -15,28 +19,21 @@ app = Flask(__name__)
 load_dotenv()
 
 PINECONE_API_KEY = os.environ.get('PINECONE_API_KEY')
-
-
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY
 
-# Download embeddings (HuggingFace Embeddings remains unchanged)
 embeddings = download_hugging_face_embeddings()
-
-
-# Initialize Pinecone using the correct method
-pinecone.init(api_key=PINECONE_API_KEY)
 
 # Ensure your Pinecone index exists
 index_name = "medicalbot"
-if index_name not in pinecone.list_indexes():
-    print(f"Index '{index_name}' not found. Creating a new one.")
-    pinecone.create_index(
-        name=index_name,
-        dimension=1536,  # Adjust based on the dimensionality of your embeddings
-        metric='euclidean'  # Or 'cosine', 'dotproduct', depending on your choice
-    )
 
-# Create Pinecone VectorStore using the existing index
+pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+
+host = "https://medicalbot-ckos228.svc.aped-4627-b74a.pinecone.io"
+
+# Create the index instance with both index name and host
+index = pc.Index("medicalbot", host=host)
+
+# Embed each chunk and upsert the embedding inot 
 docsearch = PineconeVectorStore.from_existing_index(
     index_name=index_name,
     embedding=embeddings
@@ -57,11 +54,8 @@ prompt = ChatPromptTemplate.from_messages(
 )
 
 # Use the new method for combining documents and creating a retrieval chain
-qa_chain = RetrievalQA.from_chain_type(
-    llm=llm,
-    chain_type="stuff",  # Assuming 'stuff' is the chain type you need for your task
-    retriever=retriever
-)
+question_answer_chain = create_stuff_documents_chain(llm, prompt)
+rag_chain = create_retrieval_chain(retriever ,question_answer_chain)
 
 @app.route("/")
 def index():
@@ -72,9 +66,9 @@ def chat():
     msg = request.form["msg"]
     input = msg
     print(input)
-    response = qa_chain.run(input)  # Use the newer run method for chain execution
+    response = rag_chain.invoke({"input":msg})
     print("Response : ", response)
-    return str(response)
+    return str(response["answer"])
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8080, debug=True)
